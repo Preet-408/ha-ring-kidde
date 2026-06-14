@@ -38,6 +38,18 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[BinarySensorEntityDescription, ...] = (
         device_class=BinarySensorDeviceClass.CONNECTIVITY,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
+    BinarySensorEntityDescription(
+        key="hardwired",
+        name="AC Power",
+        device_class=BinarySensorDeviceClass.PLUG,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BinarySensorEntityDescription(
+        key="battery_error",
+        name="Battery Problem",
+        device_class=BinarySensorDeviceClass.PROBLEM,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
 )
 
 
@@ -46,7 +58,7 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up binary sensors."""
+    """Set up Ring Kidde binary sensors."""
     devices = hass.data[DOMAIN][entry.entry_id]["devices"]
     entities: list[KiddeBinarySensor] = []
 
@@ -75,7 +87,7 @@ async def async_setup_entry(
 
 
 class KiddeBinarySensor(BinarySensorEntity):
-    """Smoke, CO, or connectivity binary sensor."""
+    """Binary sensor for a Ring Kidde detector."""
 
     _attr_has_entity_name = True
 
@@ -89,29 +101,38 @@ class KiddeBinarySensor(BinarySensorEntity):
         return DeviceInfo(
             identifiers={(DOMAIN, str(self._device.id))},
             name=self._device.name,
-            manufacturer="Kidde / Ring",
+            manufacturer="Kidde",
             model=self._device.kind,
-            sw_version=getattr(self._device, "firmware", None),
+            sw_version=self._device._attrs.get("health", {}).get("firmware_version_status"),
         )
 
     @property
     def is_on(self) -> bool | None:
-        health = getattr(self._device, "_health_attrs", {}) or {}
+        health = self._device._attrs.get("health", {})
         alerts = self._device._attrs.get("alerts", {})
         key = self.entity_description.key
 
         if key == "connectivity":
             return alerts.get("connection", "") == "online"
+
+        if key == "hardwired":
+            # ethernet = hardwired AC power present
+            return health.get("network_connection_value", "") == "ethernet"
+
+        if key == "battery_error":
+            return health.get("battery_error", False)
+
         if key == "smoke":
+            # Alarm state payload unconfirmed — any non-empty non-clear value = alarm
             state = health.get("smoke_status") or alerts.get("smoke") or ""
-            return bool(state) and state.lower() != ALERT_STATUS_CLEAR
+            return bool(state) and state.lower() not in ("", ALERT_STATUS_CLEAR)
+
         if key == "co":
             state = health.get("co_status") or alerts.get("co") or ""
-            return bool(state) and state.lower() != ALERT_STATUS_CLEAR
+            return bool(state) and state.lower() not in ("", ALERT_STATUS_CLEAR)
+
         return None
 
     async def async_update(self) -> None:
-        try:
-            await self._device.async_update_health_data()
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.debug("ring_kidde: update error for %s: %s", self._device.name, err)
+        """No separate health fetch needed — all data is in _attrs from device poll."""
+        pass

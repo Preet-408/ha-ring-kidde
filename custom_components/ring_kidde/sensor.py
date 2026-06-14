@@ -1,14 +1,17 @@
-"""Sensor platform for Ring Kidde — battery."""
+"""Sensor platform for Ring Kidde — firmware and connection diagnostics."""
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import timedelta, datetime, timezone
 
 from homeassistant.components.sensor import (
-    SensorDeviceClass, SensorEntity, SensorEntityDescription, SensorStateClass,
+    SensorDeviceClass,
+    SensorEntity,
+    SensorEntityDescription,
+    SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EntityCategory, PERCENTAGE
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -21,12 +24,22 @@ SCAN_INTERVAL = timedelta(seconds=SCAN_INTERVAL_SECONDS)
 
 SENSOR_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = (
     SensorEntityDescription(
-        key="battery",
-        name="Battery",
-        device_class=SensorDeviceClass.BATTERY,
-        state_class=SensorStateClass.MEASUREMENT,
-        native_unit_of_measurement=PERCENTAGE,
+        key="firmware_status",
+        name="Firmware Status",
         entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:cellphone-arrow-down",
+    ),
+    SensorEntityDescription(
+        key="last_seen",
+        name="Last Seen",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SensorEntityDescription(
+        key="wifi_signal",
+        name="WiFi Signal",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:wifi",
     ),
 )
 
@@ -55,6 +68,8 @@ async def async_setup_entry(
 
 
 class KiddeSensor(SensorEntity):
+    """Sensor for a Ring Kidde device."""
+
     _attr_has_entity_name = True
 
     def __init__(self, device, description: SensorEntityDescription) -> None:
@@ -67,23 +82,28 @@ class KiddeSensor(SensorEntity):
         return DeviceInfo(
             identifiers={(DOMAIN, str(self._device.id))},
             name=self._device.name,
-            manufacturer="Kidde / Ring",
+            manufacturer="Kidde",
             model=self._device.kind,
         )
 
     @property
     def native_value(self):
-        health = getattr(self._device, "_health_attrs", {}) or {}
-        pct = health.get("battery_percentage")
-        if pct is not None:
-            try:
-                return int(pct)
-            except (ValueError, TypeError):
-                pass
-        return health.get("battery_percentage_category")
+        health = self._device._attrs.get("health", {})
+        key = self.entity_description.key
+
+        if key == "firmware_status":
+            return health.get("firmware_version_status")
+
+        if key == "last_seen":
+            ts = health.get("last_update_time")
+            if ts:
+                return datetime.fromtimestamp(ts, tz=timezone.utc)
+            return None
+
+        if key == "wifi_signal":
+            return health.get("rssi_category")
+
+        return None
 
     async def async_update(self) -> None:
-        try:
-            await self._device.async_update_health_data()
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.debug("ring_kidde: update error for %s: %s", self._device.name, err)
+        pass
