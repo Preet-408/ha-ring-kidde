@@ -237,15 +237,19 @@ class KiddeDocSensor(_LiveEntity):
         client = data.clients.get(self._device.location_id)
         if not (client and client.connected and self._doc is not None):
             return False
-        # A device that has never been tested has no pushToTest yet: treat as idle.
-        return self._key == "test" or self._value is not None
+        if self._key == "test" and self._test_never_reported:
+            return True  # never tested since connect: idle
+        return self._value is not None
+
+    @property
+    def _test_never_reported(self) -> bool:
+        return "pushToTest" not in ((self._doc or {}).get("components") or {})
 
     @property
     def is_on(self) -> bool | None:
-        value = self._value
-        if self._key == "test" and value is None:
+        if self._key == "test" and self._test_never_reported:
             return False
-        return value
+        return self._value
 
     @property
     def extra_state_attributes(self):

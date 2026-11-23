@@ -295,9 +295,11 @@ def end_of_life(doc: dict[str, Any] | None) -> bool | None:
     if not isinstance(comp, dict):
         return None
     states = {comp.get("alarmStatus"), comp.get("warningStatus")} - {None}
-    if not states:
-        return None
-    return "active" in states
+    if "active" in states:
+        return True
+    if states and states <= {"inactive"}:
+        return False
+    return None
 
 
 def test_in_progress(doc: dict[str, Any] | None) -> bool | None:
@@ -311,8 +313,15 @@ def malfunctions(doc: dict[str, Any] | None) -> list[str] | None:
     """Current malfunction codes (e.g. PTT_BUTTON_STUCK); [] when none, None when unknown."""
     if not doc:
         return None
-    comp = (doc.get("components") or {}).get("malfunctions")
-    if comp is None:
+    components = doc.get("components") or {}
+    if "malfunctions" not in components:
         return []  # never reported: nothing wrong
-    current = comp.get("current") if isinstance(comp, dict) else None
-    return [str(c) for c in current] if isinstance(current, list) else []
+    comp = components["malfunctions"]
+    if not isinstance(comp, dict) or "current" not in comp:
+        return None
+    current = comp["current"]
+    if current is None:
+        return []  # observed: cleared
+    if isinstance(current, list):
+        return [str(c) for c in current]
+    return None
