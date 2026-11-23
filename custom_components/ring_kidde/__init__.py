@@ -88,32 +88,53 @@ def _norm(value: Any) -> str | None:
 
 
 def live_doc_for(hass: HomeAssistant, entry: ConfigEntry, device: KiddeDevice) -> dict[str, Any] | None:
-    """Find the websocket doc for a REST device (by name, MAC, serial or id)."""
+    """Find this device's websocket doc. Ambiguity returns None (entity unavailable),
+    never another detector's state."""
     data: KiddeData = entry.runtime_data
     client = data.clients.get(device.location_id)
     if client is None or not client.docs:
         return None
     rest = rest_data(hass, device)
-    keys = {
-        _norm(device.name),
+    stable = {
         _norm(rest.get("mac_address")),
         _norm((rest.get("metadata") or {}).get("amazon_device_serial_number")),
-        _norm(device.id),
         _norm(rest.get("doorbot_id_str")),
+        _norm(device.id),
     } - {None}
     assets = {a.get("uuid"): a for a in client.assets}
-    for zid, doc in client.docs.items():
-        values = {_norm(v) for v in doc.values()}
-        asset = assets.get(client.doc_src.get(zid), {})
-        values |= {_norm(v) for v in asset.values()}
-        if keys & (values - {None}):
-            return doc
-    # One Kidde alarm in the location and one alarm doc: no ambiguity.
-    kidde_here = [d for d in data.devices if d.location_id == device.location_id]
+
+    def values(zid: str, doc: dict[str, Any]) -> set[str]:
+        vals = {_norm(v) for v in doc.values()}
+        vals |= {_norm(v) for v in assets.get(client.doc_src.get(zid), {}).values()}
+        return vals - {None}
+
+    # 1. Stable identifiers (MAC, serial, Ring device id), exactly one hit.
+    hits = [doc for zid, doc in client.docs.items() if stable & values(zid, doc)]
+    if len(hits) == 1:
+        return hits[0]
+    if len(hits) > 1:
+        return None
+    # 2. Name, only if unique on both sides.
+    here = [d for d in data.devices if d.location_id == device.location_id]
+    name = _norm(device.name)
+    if name and sum(_norm(d.name) == name for d in here) == 1:
+        named = [doc for doc in client.docs.values() if _norm(doc.get("name")) == name]
+        if len(named) == 1:
+            return named[0]
+        if len(named) > 1:
+            return None
+    # 3. One Kidde alarm in the location and one alarm doc.
     alarm_docs = [d for d in client.docs.values() if "alarm.smoke" in (d.get("components") or {})]
-    if len(kidde_here) == 1 and len(alarm_docs) == 1:
+    if len(here) == 1 and len(alarm_docs) == 1:
         return alarm_docs[0]
     return None
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """v1 (upstream) stored its own Ring token; v2 needs nothing."""
+    if entry.version < 2:
+        hass.config_entries.async_update_entry(entry, data={}, version=2)
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

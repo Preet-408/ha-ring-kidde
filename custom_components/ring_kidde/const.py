@@ -18,6 +18,7 @@ RECONNECT_MIN_SECONDS = 5
 RECONNECT_MAX_SECONDS = 300
 # Re-fetch the full device docs this often, in case a partial update was missed.
 REFRESH_LIST_SECONDS = 15 * 60
+LIST_RESPONSE_TIMEOUT_SECONDS = 60
 
 
 def kind_suffix(kind: str) -> str:

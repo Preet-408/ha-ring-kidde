@@ -14,6 +14,7 @@ from collections import deque
 from collections.abc import Callable
 import json
 import logging
+import time
 from typing import Any
 
 import aiohttp
@@ -26,6 +27,7 @@ from .const import (
     DEVICE_LIST_MSG,
     RECONNECT_MAX_SECONDS,
     RECONNECT_MIN_SECONDS,
+    LIST_RESPONSE_TIMEOUT_SECONDS,
     REFRESH_LIST_SECONDS,
     TICKET_PATH,
     is_kidde_kind,
@@ -94,6 +96,8 @@ class KiddeLiveClient:
         self.last_error: str | None = None
         self.samples: deque[dict[str, Any]] = deque(maxlen=25)
         self._seq = 1
+        self._received: set[str] = set()  # assets that answered the current list request
+        self._awaiting_since: float | None = None
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._task: asyncio.Task | None = None
         self._stopping = False
@@ -130,7 +134,7 @@ class KiddeLiveClient:
             except asyncio.CancelledError:
                 raise
             except Exception as err:  # noqa: BLE001 - keep the loop alive
-                self.last_error = f"{type(err).__name__}: {err}"
+                self.last_error = _safe_error(err)
                 _LOGGER.warning("Kidde live link error (%s), retrying in %ss", self.last_error, delay)
             self._set_connected(False)
             if self._stopping:
@@ -154,6 +158,8 @@ class KiddeLiveClient:
         return resp.json()
 
     async def _send_list_requests(self, ws: aiohttp.ClientWebSocketResponse) -> None:
+        self._received.clear()
+        self._awaiting_since = time.monotonic()
         for asset in self.assets:
             msg = {"msg": DEVICE_LIST_MSG, "dst": asset["uuid"], "seq": self._seq}
             self._seq += 1
@@ -179,13 +185,26 @@ class KiddeLiveClient:
         )
         self._ws = ws
         got_list = False
+        # Fresh connection: forget everything, so a stale "active" can never resurface.
+        self.docs.clear()
+        self.doc_src.clear()
+        self._on_change()
         try:
             await self._send_list_requests(ws)
+            next_refresh = time.monotonic() + REFRESH_LIST_SECONDS
             while not self._stopping:
-                try:
-                    message = await ws.receive(timeout=REFRESH_LIST_SECONDS)
-                except TimeoutError:
+                now = time.monotonic()
+                if self._awaiting_since is not None and now - self._awaiting_since > LIST_RESPONSE_TIMEOUT_SECONDS:
+                    self.last_error = "Ring did not answer the device list request"
+                    break
+                if now >= next_refresh:
                     await self._send_list_requests(ws)
+                    next_refresh = now + REFRESH_LIST_SECONDS
+                    continue
+                wait = min(next_refresh - now, 5.0)
+                try:
+                    message = await ws.receive(timeout=wait)
+                except TimeoutError:
                     continue
                 if message.type == aiohttp.WSMsgType.TEXT:
                     result = self._handle(message.data)
@@ -248,9 +267,21 @@ class KiddeLiveClient:
             if msg.get("src"):
                 self.doc_src[zid] = msg["src"]
             changed = True
-        if is_list:
-            self._set_connected(True)
+        if is_list and msg.get("src"):
+            self._received.add(msg["src"])
+            if all(a["uuid"] in self._received for a in self.assets):
+                self._awaiting_since = None
+                self._set_connected(True)
         if changed:
             _LOGGER.debug("Kidde live: %s docs updated (%s)", len(body), "list" if is_list else "update")
             self._on_change()
         return "list" if is_list else None
+
+
+def _safe_error(err: Exception) -> str:
+    """Error text without URLs (aiohttp handshake errors include the authcode)."""
+    status = getattr(err, "status", None)
+    name = type(err).__name__
+    if isinstance(err, RuntimeError) and "Kidde assets" in str(err):
+        return str(err)
+    return f"{name} (HTTP {status})" if status else name
