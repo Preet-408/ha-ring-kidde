@@ -101,8 +101,16 @@ def _assign_docs(hass: HomeAssistant, data: KiddeData, location_id: str) -> dict
     assets = {a.get("uuid"): a for a in client.assets}
 
     def doc_values(zid: str) -> set[str]:
-        vals = {_norm(v) for v in client.docs[zid].values()}
-        vals |= {_norm(v) for v in assets.get(client.doc_src.get(zid), {}).values()}
+        """Identifier-like values only: names are for step 2, never step 1."""
+
+        def ids(record: dict[str, Any]) -> set[str | None]:
+            return {
+                _norm(v)
+                for k, v in record.items()
+                if "name" not in k.lower() and "description" not in k.lower()
+            }
+
+        vals = ids(client.docs[zid]) | ids(assets.get(client.doc_src.get(zid), {}))
         return vals - {None}
 
     def stable_keys(device: KiddeDevice) -> set[str]:
