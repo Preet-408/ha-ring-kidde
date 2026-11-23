@@ -1,138 +1,192 @@
-"""Binary sensor platform for Ring Kidde smoke/CO detectors."""
+"""Binary sensors: live smoke/CO, plus online, battery problem and live-link status."""
+
 from __future__ import annotations
 
-import logging
 from datetime import timedelta
 
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
-    BinarySensorEntityDescription,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
 
-from .const import ALERT_STATUS_CLEAR, DOMAIN, KIDDE_CO_KINDS, SCAN_INTERVAL_SECONDS
-
-_LOGGER = logging.getLogger(__name__)
-SCAN_INTERVAL = timedelta(seconds=SCAN_INTERVAL_SECONDS)
-
-BINARY_SENSOR_DESCRIPTIONS: tuple[BinarySensorEntityDescription, ...] = (
-    BinarySensorEntityDescription(
-        key="smoke",
-        name="Smoke",
-        device_class=BinarySensorDeviceClass.SMOKE,
-    ),
-    BinarySensorEntityDescription(
-        key="co",
-        name="Carbon Monoxide",
-        device_class=BinarySensorDeviceClass.CO,
-    ),
-    BinarySensorEntityDescription(
-        key="connectivity",
-        name="Connected",
-        device_class=BinarySensorDeviceClass.CONNECTIVITY,
-        entity_category=EntityCategory.DIAGNOSTIC,
-    ),
-    BinarySensorEntityDescription(
-        key="hardwired",
-        name="AC Power",
-        device_class=BinarySensorDeviceClass.PLUG,
-        entity_category=EntityCategory.DIAGNOSTIC,
-    ),
-    BinarySensorEntityDescription(
-        key="battery_error",
-        name="Battery Problem",
-        device_class=BinarySensorDeviceClass.PROBLEM,
-        entity_category=EntityCategory.DIAGNOSTIC,
-    ),
-)
+from . import KiddeData, KiddeDevice, live_doc_for, rest_data, signal_update
+from .const import DOMAIN, HEALTH_POLL_SECONDS, kind_has_co, kind_has_smoke
+from .live import KiddeLiveClient, alarm_state
 
 
-async def async_setup_entry(
-    hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
-) -> None:
-    """Set up Ring Kidde binary sensors."""
-    devices = hass.data[DOMAIN][entry.entry_id]["devices"]
-    entities: list[KiddeBinarySensor] = []
-
-    for device in devices:
-        for description in BINARY_SENSOR_DESCRIPTIONS:
-            if description.key == "co" and device.kind not in KIDDE_CO_KINDS:
-                continue
-            entities.append(KiddeBinarySensor(device, description))
-
-    if not entities:
-        _LOGGER.warning(
-            "ring_kidde: No entities created. Check that your Kidde detector "
-            "is visible in the Ring app and the Ring integration is configured."
-        )
-
-    async_add_entities(entities, True)
-
-    async def _poll(now=None):
-        for entity in entities:
-            await entity.async_update()
-            entity.async_write_ha_state()
-
-    entry.async_on_unload(
-        async_track_time_interval(hass, _poll, SCAN_INTERVAL)
+def device_info(device: KiddeDevice) -> DeviceInfo:
+    return DeviceInfo(
+        identifiers={(DOMAIN, str(device.id))},
+        name=device.name,
+        manufacturer="Kidde",
+        model=device.kind,
     )
 
 
-class KiddeBinarySensor(BinarySensorEntity):
-    """Binary sensor for a Ring Kidde detector."""
+async def async_setup_entry(
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+) -> None:
+    data: KiddeData = entry.runtime_data
+    entities: list[BinarySensorEntity] = []
+    for device in data.devices:
+        if kind_has_smoke(device.kind):
+            entities.append(KiddeAlarmSensor(hass, entry, device, "smoke"))
+        if kind_has_co(device.kind):
+            entities.append(KiddeAlarmSensor(hass, entry, device, "co"))
+        entities.append(KiddeOnlineSensor(hass, device))
+        entities.append(KiddeBatteryProblemSensor(hass, device))
+    for client in data.clients.values():
+        entities.append(KiddeLiveLinkSensor(entry, client))
+    async_add_entities(entities)
 
+
+class _LiveEntity(BinarySensorEntity):
+    _attr_should_poll = False
     _attr_has_entity_name = True
 
-    def __init__(self, device, description: BinarySensorEntityDescription) -> None:
+    def __init__(self, entry: ConfigEntry) -> None:
+        self._entry = entry
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass, signal_update(self._entry.entry_id), self.async_write_ha_state
+            )
+        )
+
+
+class KiddeAlarmSensor(_LiveEntity):
+    """Smoke or CO, pushed live from Ring. Unavailable when the live link is down,
+    so an alert on 'unavailable' catches a silent failure."""
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, device: KiddeDevice, key: str) -> None:
+        super().__init__(entry)
         self._device = device
-        self.entity_description = description
-        self._attr_unique_id = f"ring_kidde_{device.id}_{description.key}"
+        self._key = key
+        self._attr_unique_id = f"ring_kidde_{device.id}_{key}"
+        self._attr_device_info = device_info(device)
+        if key == "smoke":
+            self._attr_name = "Smoke"
+            self._attr_device_class = BinarySensorDeviceClass.SMOKE
+        else:
+            self._attr_name = "Carbon monoxide"
+            self._attr_device_class = BinarySensorDeviceClass.CO
 
     @property
-    def device_info(self) -> DeviceInfo:
-        return DeviceInfo(
-            identifiers={(DOMAIN, str(self._device.id))},
-            name=self._device.name,
-            manufacturer="Kidde",
-            model=self._device.kind,
-            sw_version=self._device._attrs.get("health", {}).get("firmware_version_status"),
-        )
+    def _client(self) -> KiddeLiveClient | None:
+        data: KiddeData = self._entry.runtime_data
+        return data.clients.get(self._device.location_id)
+
+    @property
+    def _doc(self):
+        return live_doc_for(self.hass, self._entry, self._device)
+
+    @property
+    def available(self) -> bool:
+        client = self._client
+        return bool(client and client.connected and alarm_state(self._doc, self._key) is not None)
 
     @property
     def is_on(self) -> bool | None:
-        health = self._device._attrs.get("health", {})
-        alerts = self._device._attrs.get("alerts", {})
-        key = self.entity_description.key
+        return alarm_state(self._doc, self._key)
 
-        if key == "connectivity":
-            return alerts.get("connection", "") == "online"
+    @property
+    def extra_state_attributes(self):
+        client = self._client
+        return {
+            "live_link": bool(client and client.connected),
+            "matched_live_device": self._doc is not None,
+        }
 
-        if key == "hardwired":
-            # ethernet = hardwired AC power present
-            return health.get("network_connection_value", "") == "ethernet"
 
-        if key == "battery_error":
-            return health.get("battery_error", False)
+class KiddeLiveLinkSensor(_LiveEntity):
+    """Is Home Assistant connected to Ring's live alarm feed for this location?"""
 
-        if key == "smoke":
-            # Alarm state payload unconfirmed — any non-empty non-clear value = alarm
-            state = health.get("smoke_status") or alerts.get("smoke") or ""
-            return bool(state) and state.lower() not in ("", ALERT_STATUS_CLEAR)
+    _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_name = "Kidde live alarm link"
+    _attr_has_entity_name = False
 
-        if key == "co":
-            state = health.get("co_status") or alerts.get("co") or ""
-            return bool(state) and state.lower() not in ("", ALERT_STATUS_CLEAR)
+    def __init__(self, entry: ConfigEntry, client: KiddeLiveClient) -> None:
+        super().__init__(entry)
+        self._client = client
+        self._attr_unique_id = f"ring_kidde_live_link_{client.location_id}"
 
-        return None
+    @property
+    def is_on(self) -> bool:
+        return self._client.connected
 
-    async def async_update(self) -> None:
-        """No separate health fetch needed — all data is in _attrs from device poll."""
-        pass
+    @property
+    def extra_state_attributes(self):
+        return {
+            "last_error": self._client.last_error,
+            "live_devices": len(self._client.docs),
+        }
+
+
+class _RestSensor(BinarySensorEntity):
+    """Health from the Ring integration's polled device data."""
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, hass: HomeAssistant, device: KiddeDevice) -> None:
+        self._device = device
+        self._attr_device_info = device_info(device)
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            async_track_time_interval(
+                self.hass,
+                self._tick,
+                timedelta(seconds=HEALTH_POLL_SECONDS),
+            )
+        )
+
+    @callback
+    def _tick(self, _now) -> None:
+        self.async_write_ha_state()
+
+    @property
+    def _rest(self):
+        return rest_data(self.hass, self._device)
+
+    @property
+    def available(self) -> bool:
+        return bool(self._rest)
+
+
+class KiddeOnlineSensor(_RestSensor):
+    _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+    _attr_name = "Online"
+
+    def __init__(self, hass: HomeAssistant, device: KiddeDevice) -> None:
+        super().__init__(hass, device)
+        self._attr_unique_id = f"ring_kidde_{device.id}_online"
+
+    @property
+    def is_on(self) -> bool | None:
+        connection = (self._rest.get("alerts") or {}).get("connection")
+        return None if connection is None else connection == "online"
+
+
+class KiddeBatteryProblemSensor(_RestSensor):
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+    _attr_name = "Battery problem"
+
+    def __init__(self, hass: HomeAssistant, device: KiddeDevice) -> None:
+        super().__init__(hass, device)
+        self._attr_unique_id = f"ring_kidde_{device.id}_battery_problem"
+
+    @property
+    def is_on(self) -> bool | None:
+        value = (self._rest.get("health") or {}).get("battery_error")
+        return None if value is None else bool(value)

@@ -1,12 +1,14 @@
 {
   "domain": "ring_kidde",
-  "name": "Ring Kidde Smoke/CO Detector",
-  "version": "0.1.0",
-  "documentation": "https://github.com/home-assistant/core/issues/152916",
-  "issue_tracker": "https://github.com/home-assistant/core/issues/152916",
+  "name": "Ring Kidde Smoke/CO",
+  "version": "0.2.0",
+  "documentation": "https://github.com/Preet-408/ha-ring-kidde",
+  "issue_tracker": "https://github.com/Preet-408/ha-ring-kidde/issues",
   "dependencies": ["ring"],
-  "codeowners": [],
-  "requirements": ["ring-doorbell>=0.8.0"],
-  "iot_class": "cloud_polling",
-  "config_flow": true
+  "after_dependencies": ["ring"],
+  "codeowners": ["@Preet-408"],
+  "requirements": [],
+  "iot_class": "cloud_push",
+  "config_flow": true,
+  "single_config_entry": true
 }

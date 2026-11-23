@@ -1,0 +1,16 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Ring Kidde smoke/CO alarms",
+        "description": "Adds these Kidde alarms from your Ring integration: {devices}. It uses the Ring integration's login, so no password is needed."
+      }
+    },
+    "abort": {
+      "already_configured": "Already set up.",
+      "single_instance_allowed": "Already set up.",
+      "ring_not_loaded": "Set up the Ring integration first.",
+      "no_kidde_devices": "No Kidde smoke/CO alarms found in your Ring account."
+    }
+  }
+}

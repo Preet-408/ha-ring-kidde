@@ -2,30 +2,15 @@
   "config": {
     "step": {
       "user": {
-        "title": "Ring Kidde — Log in to Ring",
-        "description": "Enter your Ring account credentials. A two-factor code will be requested on the next screen if your account has 2FA enabled.",
-        "data": {
-          "username": "Email address",
-          "password": "Password"
-        }
-      },
-      "2fa": {
-        "title": "Ring Two-Factor Authentication",
-        "description": "Ring sent a verification code to the account associated with {username}. Enter it below.",
-        "data": {
-          "two_factor_code": "Verification code"
-        }
+        "title": "Ring Kidde smoke/CO alarms",
+        "description": "Adds these Kidde alarms from your Ring integration: {devices}. It uses the Ring integration's login, so no password is needed."
       }
     },
     "abort": {
-      "single_instance_allowed": "Already configured. Only one instance needed.",
-      "cannot_connect": "Could not connect to the Ring API. Check your network and try again.",
-      "no_kidde_devices": "No Kidde smoke/CO detectors found in your Ring account."
-    },
-    "error": {
-      "invalid_auth": "Invalid email or password.",
-      "invalid_2fa": "Invalid or expired verification code.",
-      "unknown": "Unexpected error — check the Home Assistant logs."
+      "already_configured": "Already set up.",
+      "single_instance_allowed": "Already set up.",
+      "ring_not_loaded": "Set up the Ring integration first.",
+      "no_kidde_devices": "No Kidde smoke/CO alarms found in your Ring account."
     }
   }
 }
