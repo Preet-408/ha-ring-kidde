@@ -287,3 +287,32 @@ def _safe_error(err: Exception) -> str:
     if isinstance(err, RuntimeError) and "Kidde assets" in str(err):
         return str(err)
     return f"{name} (HTTP {status})" if status else name
+
+
+def end_of_life(doc: dict[str, Any] | None) -> bool | None:
+    """End-of-life alarm or warning active (alarms expire after ~10 years)."""
+    comp = ((doc or {}).get("components") or {}).get("alarm.end-of-life")
+    if not isinstance(comp, dict):
+        return None
+    states = {comp.get("alarmStatus"), comp.get("warningStatus")} - {None}
+    if not states:
+        return None
+    return "active" in states
+
+
+def test_in_progress(doc: dict[str, Any] | None) -> bool | None:
+    """Push-to-test button: 'active' while a test runs."""
+    comp = ((doc or {}).get("components") or {}).get("pushToTest")
+    status = comp.get("status") if isinstance(comp, dict) else None
+    return {"active": True, "inactive": False}.get(status)
+
+
+def malfunctions(doc: dict[str, Any] | None) -> list[str] | None:
+    """Current malfunction codes (e.g. PTT_BUTTON_STUCK); [] when none, None when unknown."""
+    if not doc:
+        return None
+    comp = (doc.get("components") or {}).get("malfunctions")
+    if comp is None:
+        return []  # never reported: nothing wrong
+    current = comp.get("current") if isinstance(comp, dict) else None
+    return [str(c) for c in current] if isinstance(current, list) else []

@@ -1,7 +1,7 @@
 {
   "domain": "ring_kidde",
   "name": "Ring Kidde Smoke/CO",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "documentation": "https://github.com/Preet-408/ha-ring-kidde",
   "issue_tracker": "https://github.com/Preet-408/ha-ring-kidde/issues",
   "dependencies": ["ring"],

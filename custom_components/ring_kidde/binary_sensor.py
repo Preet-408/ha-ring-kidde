@@ -18,7 +18,7 @@ from homeassistant.helpers.event import async_track_time_interval
 
 from . import KiddeData, KiddeDevice, live_doc_for, rest_data, signal_update
 from .const import DOMAIN, HEALTH_POLL_SECONDS, kind_has_co, kind_has_smoke
-from .live import KiddeLiveClient, alarm_state
+from .live import KiddeLiveClient, alarm_state, end_of_life, malfunctions, test_in_progress
 
 
 def device_info(device: KiddeDevice) -> DeviceInfo:
@@ -40,6 +40,9 @@ async def async_setup_entry(
             entities.append(KiddeAlarmSensor(hass, entry, device, "smoke"))
         if kind_has_co(device.kind):
             entities.append(KiddeAlarmSensor(hass, entry, device, "co"))
+        entities.append(KiddeDocSensor(hass, entry, device, "end_of_life"))
+        entities.append(KiddeDocSensor(hass, entry, device, "test"))
+        entities.append(KiddeDocSensor(hass, entry, device, "malfunction"))
         entities.append(KiddeOnlineSensor(hass, device))
         entities.append(KiddeBatteryProblemSensor(hass, device))
     for client in data.clients.values():
@@ -190,3 +193,62 @@ class KiddeBatteryProblemSensor(_RestSensor):
     def is_on(self) -> bool | None:
         value = (self._rest.get("health") or {}).get("battery_error")
         return None if value is None else bool(value)
+
+
+class KiddeDocSensor(_LiveEntity):
+    """End of life / test in progress / malfunction, from the live device doc."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, device: KiddeDevice, key: str) -> None:
+        super().__init__(entry)
+        self._device = device
+        self._key = key
+        self._attr_unique_id = f"ring_kidde_{device.id}_{key}"
+        self._attr_device_info = device_info(device)
+        if key == "end_of_life":
+            self._attr_name = "End of life"
+            self._attr_device_class = BinarySensorDeviceClass.PROBLEM
+        elif key == "test":
+            self._attr_name = "Test in progress"
+            self._attr_device_class = BinarySensorDeviceClass.RUNNING
+            self._attr_entity_category = None
+        else:
+            self._attr_name = "Malfunction"
+            self._attr_device_class = BinarySensorDeviceClass.PROBLEM
+
+    @property
+    def _doc(self):
+        return live_doc_for(self.hass, self._entry, self._device)
+
+    @property
+    def _value(self) -> bool | None:
+        doc = self._doc
+        if self._key == "end_of_life":
+            return end_of_life(doc)
+        if self._key == "test":
+            return test_in_progress(doc)
+        codes = malfunctions(doc)
+        return None if codes is None else bool(codes)
+
+    @property
+    def available(self) -> bool:
+        data: KiddeData = self._entry.runtime_data
+        client = data.clients.get(self._device.location_id)
+        if not (client and client.connected and self._doc is not None):
+            return False
+        # A device that has never been tested has no pushToTest yet: treat as idle.
+        return self._key == "test" or self._value is not None
+
+    @property
+    def is_on(self) -> bool | None:
+        value = self._value
+        if self._key == "test" and value is None:
+            return False
+        return value
+
+    @property
+    def extra_state_attributes(self):
+        if self._key == "malfunction":
+            return {"codes": malfunctions(self._doc) or []}
+        return None
