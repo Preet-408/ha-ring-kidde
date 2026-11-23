@@ -1,7 +1,0 @@
-[2026-11-23T08:45:40.625Z] start: host=codex, reason=session_end, project=/Users/preet408/code/ha-ring-kidde
-[2026-11-23T08:45:40.626Z] journal: 1 entries across 1 sessions
-[2026-11-23T08:45:40.629Z] tier-promotion: db open skipped (Cannot find package 'better-sqlite3' imported from /Users/preet408/.ijfw/mcp-server/src/memory/fts5.js)
-[2026-11-23T08:45:40.632Z] wiki-compile: db open skipped (Cannot find package 'better-sqlite3' imported from /Users/preet408/.ijfw/mcp-server/src/memory/fts5.js)
-[2026-11-23T08:45:40.684Z] profile_derive: merged delta (style=1 feedback=0 inferences=0)
-[2026-11-23T08:45:40.685Z] mark-completed: ok
-[2026-11-23T08:45:40.685Z] end: completed=5 failed=0
