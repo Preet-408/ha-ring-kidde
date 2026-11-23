@@ -30,7 +30,6 @@ from .const import (
     LIST_RESPONSE_TIMEOUT_SECONDS,
     REFRESH_LIST_SECONDS,
     TICKET_PATH,
-    is_kidde_kind,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -168,7 +167,10 @@ class KiddeLiveClient:
     async def _connect_once(self) -> bool:
         ticket = await self._fetch_ticket()
         all_assets = ticket.get("assets") or []
-        self.assets = [a for a in all_assets if is_kidde_kind(a.get("kind")) and a.get("uuid")]
+        # Ticket assets use the bare "sensor_bluejay" kind (devices use sensor_bluejay_<x>).
+        self.assets = [
+            a for a in all_assets if str(a.get("kind") or "").startswith("sensor_bluejay") and a.get("uuid")
+        ]
         if not self.assets:
             raise RuntimeError(
                 "no Kidde assets in Ring ticket (kinds: "
