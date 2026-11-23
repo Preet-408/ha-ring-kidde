@@ -87,47 +87,66 @@ def _norm(value: Any) -> str | None:
     return text if len(text) >= 4 else None
 
 
-def live_doc_for(hass: HomeAssistant, entry: ConfigEntry, device: KiddeDevice) -> dict[str, Any] | None:
-    """Find this device's websocket doc. Ambiguity returns None (entity unavailable),
-    never another detector's state."""
-    data: KiddeData = entry.runtime_data
-    client = data.clients.get(device.location_id)
+def _assign_docs(hass: HomeAssistant, data: KiddeData, location_id: str) -> dict[int, str]:
+    """One-to-one map of REST device id -> websocket doc zid for a location.
+
+    Stable identifiers (MAC, serial, Ring device id) win; names are used only for
+    devices and docs nobody else claimed. Anything ambiguous stays unmatched, so its
+    entities are unavailable rather than showing another detector's state.
+    """
+    client = data.clients.get(location_id)
     if client is None or not client.docs:
-        return None
-    rest = rest_data(hass, device)
-    stable = {
-        _norm(rest.get("mac_address")),
-        _norm((rest.get("metadata") or {}).get("amazon_device_serial_number")),
-        _norm(rest.get("doorbot_id_str")),
-        _norm(device.id),
-    } - {None}
+        return {}
+    here = [d for d in data.devices if d.location_id == location_id]
     assets = {a.get("uuid"): a for a in client.assets}
 
-    def values(zid: str, doc: dict[str, Any]) -> set[str]:
-        vals = {_norm(v) for v in doc.values()}
+    def doc_values(zid: str) -> set[str]:
+        vals = {_norm(v) for v in client.docs[zid].values()}
         vals |= {_norm(v) for v in assets.get(client.doc_src.get(zid), {}).values()}
         return vals - {None}
 
-    # 1. Stable identifiers (MAC, serial, Ring device id), exactly one hit.
-    hits = [doc for zid, doc in client.docs.items() if stable & values(zid, doc)]
-    if len(hits) == 1:
-        return hits[0]
-    if len(hits) > 1:
-        return None
-    # 2. Name, only if unique on both sides.
-    here = [d for d in data.devices if d.location_id == device.location_id]
-    name = _norm(device.name)
-    if name and sum(_norm(d.name) == name for d in here) == 1:
-        named = [doc for doc in client.docs.values() if _norm(doc.get("name")) == name]
+    def stable_keys(device: KiddeDevice) -> set[str]:
+        rest = rest_data(hass, device)
+        return {
+            _norm(rest.get("mac_address")),
+            _norm((rest.get("metadata") or {}).get("amazon_device_serial_number")),
+            _norm(rest.get("doorbot_id_str")),
+            _norm(device.id),
+        } - {None}
+
+    values = {zid: doc_values(zid) for zid in client.docs}
+    result: dict[int, str] = {}
+    # 1. Stable identifiers: keep only pairs that are unique in both directions.
+    pairs = [(d.id, zid) for d in here for zid, vals in values.items() if stable_keys(d) & vals]
+    for dev_id, zid in pairs:
+        if sum(p[0] == dev_id for p in pairs) == 1 and sum(p[1] == zid for p in pairs) == 1:
+            result[dev_id] = zid
+    claimed_devices = {p[0] for p in pairs}
+    claimed_docs = {p[1] for p in pairs}
+    # 2. Names, for devices/docs untouched by step 1, unique on both sides.
+    names = [_norm(d.name) for d in here]
+    for device in here:
+        if device.id in claimed_devices:
+            continue
+        name = _norm(device.name)
+        if not name or names.count(name) != 1:
+            continue
+        named = [z for z in values if z not in claimed_docs and _norm(client.docs[z].get("name")) == name]
         if len(named) == 1:
-            return named[0]
-        if len(named) > 1:
-            return None
-    # 3. One Kidde alarm in the location and one alarm doc.
-    alarm_docs = [d for d in client.docs.values() if "alarm.smoke" in (d.get("components") or {})]
-    if len(here) == 1 and len(alarm_docs) == 1:
-        return alarm_docs[0]
-    return None
+            result[device.id] = named[0]
+    # 3. Exactly one alarm and one alarm doc in the location.
+    alarm_docs = [z for z, doc in client.docs.items() if "alarm.smoke" in (doc.get("components") or {})]
+    if not result and len(here) == 1 and len(alarm_docs) == 1:
+        result[here[0].id] = alarm_docs[0]
+    return result
+
+
+def live_doc_for(hass: HomeAssistant, entry: ConfigEntry, device: KiddeDevice) -> dict[str, Any] | None:
+    """This device's websocket doc, or None when unmatched or ambiguous."""
+    data: KiddeData = entry.runtime_data
+    zid = _assign_docs(hass, data, device.location_id).get(device.id)
+    client = data.clients.get(device.location_id)
+    return client.docs.get(zid) if client and zid else None
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
